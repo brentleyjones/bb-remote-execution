@@ -4,7 +4,11 @@ package runner
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"log"
 	"os/exec"
+	"strings"
 	"syscall"
 
 	"github.com/buildbarn/bb-remote-execution/pkg/proto/resourceusage"
@@ -71,6 +75,7 @@ type localRunner struct {
 	sysProcAttr                  *syscall.SysProcAttr
 	setTmpdirEnvironmentVariable bool
 	chrootIntoInputRoot          bool
+	developerDirs                map[string]string
 }
 
 // NewLocalRunner returns a Runner capable of running commands on the
@@ -82,6 +87,7 @@ func NewLocalRunner(buildDirectory filesystem.Directory, buildDirectoryPath *pat
 		sysProcAttr:                  sysProcAttr,
 		setTmpdirEnvironmentVariable: setTmpdirEnvironmentVariable,
 		chrootIntoInputRoot:          chrootIntoInputRoot,
+		developerDirs:                map[string]string{}, // TODO: Use shared cache between runners
 	}
 }
 
@@ -98,6 +104,77 @@ func (r *localRunner) openLog(logPath string) (filesystem.FileAppender, error) {
 	}
 	d := logFileResolver.stack[len(logFileResolver.stack)-1]
 	return d.OpenAppend(*logFileResolver.name, filesystem.CreateExcl(0o666))
+}
+
+func (r *localRunner) resolveDeveloperDir(ctx context.Context, xcodeVersionOverride string) (string, error) {
+	if resolvedDeveloperDir, ok := r.developerDirs[xcodeVersionOverride]; ok {
+		return resolvedDeveloperDir, nil
+	}
+
+	var resolvedDeveloperDir string
+	if xcodeVersionOverride == "" {
+		out, err := exec.CommandContext(ctx, "/usr/bin/xcode-select", "-p").Output()
+		if err != nil {
+			return "", err
+		}
+		resolvedDeveloperDir = strings.TrimSpace(string(out))
+	} else {
+		ss := strings.Split(xcodeVersionOverride, ".")
+		if len(ss) == 1 {
+			return "", fmt.Errorf("XCODE_VERSION_OVERRIDE (%q) invalid format, expected SemVer.BuildVersion", xcodeVersionOverride)
+		}
+		xcodeBuildVersion := ss[len(ss)-1]
+
+		out, err := exec.CommandContext(ctx, "/usr/bin/mdfind", "-onlyin", "/Applications/", "kMDItemCFBundleIdentifier == 'com.apple.dt.Xcode'").Output()
+		if err != nil {
+			return "", err
+		}
+		stdout := strings.TrimSpace(string(out))
+		if len(stdout) == 0 {
+			return "", errors.New("No Xcodes found")
+		}
+
+		for _, xcode := range strings.Split(stdout, "\n") {
+			versionPlist := xcode + "/Contents/version.plist"
+			out, err := exec.CommandContext(ctx, "/usr/libexec/PlistBuddy", "-c", "Print :ProductBuildVersion", versionPlist).Output()
+			if err != nil {
+				// We're just ignoring malformed Xcodes
+				log.Println("Couldn't determine Build Version for", xcode)
+				continue
+			}
+			if xcodeBuildVersion == strings.TrimSpace(string(out)) {
+				resolvedDeveloperDir = xcode + "/Contents/Developer"
+				break
+			}
+		}
+
+		if resolvedDeveloperDir == "" {
+			return "", fmt.Errorf("Cound not find Xcode with Build Version %q", xcodeBuildVersion)
+		}
+	}
+
+	r.developerDirs[xcodeVersionOverride] = resolvedDeveloperDir
+	return resolvedDeveloperDir, nil
+}
+
+func (r *localRunner) resolveXcodeEnvVars(ctx context.Context, request *runner.RunRequest) ([]string, error) {
+	developerDir, err := r.resolveDeveloperDir(ctx, request.EnvironmentVariables["XCODE_VERSION_OVERRIDE"])
+	if err != nil {
+		return []string{}, err
+	}
+
+	var sdkPlatform string
+	if sdkPlatformOverride := request.EnvironmentVariables["APPLE_SDK_PLATFORM"]; sdkPlatformOverride != "" {
+		sdkPlatform = sdkPlatformOverride
+	} else {
+		sdkPlatform = "MacOSX"
+	}
+
+	sdkVersion := request.EnvironmentVariables["APPLE_SDK_VERSION_OVERRIDE"]
+
+	sdkRoot := developerDir + "/Platforms/" + sdkPlatform + ".platform/Developer/SDKs/" + sdkPlatform + sdkVersion + ".sdk"
+
+	return []string{"DEVELOPER_DIR=" + developerDir, "SDKROOT=" + sdkRoot}, nil
 }
 
 func convertTimeval(t syscall.Timeval) *durationpb.Duration {
@@ -139,7 +216,7 @@ func (r *localRunner) Run(ctx context.Context, request *runner.RunRequest) (*run
 	}
 
 	// Set the environment variables.
-	cmd.Env = make([]string, 0, len(request.EnvironmentVariables)+1)
+	cmd.Env = make([]string, 0, len(request.EnvironmentVariables)+3)
 	if r.setTmpdirEnvironmentVariable && request.TemporaryDirectory != "" {
 		temporaryDirectory, scopeWalker := r.buildDirectoryPath.Join(path.VoidScopeWalker)
 		if err := path.Resolve(request.TemporaryDirectory, scopeWalker); err != nil {
@@ -150,6 +227,12 @@ func (r *localRunner) Run(ctx context.Context, request *runner.RunRequest) (*run
 	for name, value := range request.EnvironmentVariables {
 		cmd.Env = append(cmd.Env, name+"="+value)
 	}
+
+	xcodeEnvVars, err := r.resolveXcodeEnvVars(ctx, request)
+	if err != nil {
+		return nil, util.StatusWrap(err, "Failed to resolve Xcode environment variables")
+	}
+	cmd.Env = append(cmd.Env, xcodeEnvVars...)
 
 	// Set the working directory.
 	workingDirectory, scopeWalker := workingDirectoryBase.Join(path.VoidScopeWalker)

@@ -265,28 +265,33 @@ func main() {
 						log.Fatal("Failed to marshal worker ID: ", err)
 					}
 
-					buildExecutor := builder.NewLoggingBuildExecutor(
-						builder.NewCachingBuildExecutor(
-							builder.NewMetricsBuildExecutor(
-								builder.NewFilePoolStatsBuildExecutor(
-									builder.NewTimestampedBuildExecutor(
-										builder.NewStorageFlushingBuildExecutor(
-											builder.NewLocalBuildExecutor(
-												contentAddressableStorageWriter,
-												buildDirectoryCreator,
-												runner.NewRemoteRunner(runnerConnection),
-												clock.SystemClock,
-												defaultExecutionTimeout,
-												maximumExecutionTimeout,
-												inputRootCharacterDevices,
-												int(configuration.MaximumMessageSizeBytes)),
-											contentAddressableStorageFlusher),
-										clock.SystemClock,
-										string(workerName)))),
-							globalContentAddressableStorage,
-							actionCache,
-							browserURL),
+					buildExecutor := builder.NewCachingBuildExecutor(
+						builder.NewMetricsBuildExecutor(
+							builder.NewFilePoolStatsBuildExecutor(
+								builder.NewTimestampedBuildExecutor(
+									builder.NewStorageFlushingBuildExecutor(
+										builder.NewLocalBuildExecutor(
+											contentAddressableStorageWriter,
+											buildDirectoryCreator,
+											runner.NewRemoteRunner(runnerConnection),
+											clock.SystemClock,
+											defaultExecutionTimeout,
+											maximumExecutionTimeout,
+											inputRootCharacterDevices,
+											int(configuration.MaximumMessageSizeBytes),
+											workerID),
+										contentAddressableStorageFlusher),
+									clock.SystemClock,
+									string(workerName)))),
+						globalContentAddressableStorage,
+						actionCache,
 						browserURL)
+					// TODO: Make this a config
+					if false {
+						buildExecutor = builder.NewLoggingBuildExecutor(
+							buildExecutor,
+							browserURL)
+					}
 
 					buildClient := builder.NewBuildClient(
 						schedulerClient,

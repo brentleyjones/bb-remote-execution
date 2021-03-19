@@ -68,11 +68,12 @@ type localBuildExecutor struct {
 	maximumExecutionTimeout   time.Duration
 	inputRootCharacterDevices map[path.Component]int
 	maximumMessageSizeBytes   int
+	workerID                  map[string]string
 }
 
 // NewLocalBuildExecutor returns a BuildExecutor that executes build
 // steps on the local system.
-func NewLocalBuildExecutor(contentAddressableStorage blobstore.BlobAccess, buildDirectoryCreator BuildDirectoryCreator, runner runner.Runner, clock clock.Clock, defaultExecutionTimeout, maximumExecutionTimeout time.Duration, inputRootCharacterDevices map[path.Component]int, maximumMessageSizeBytes int) BuildExecutor {
+func NewLocalBuildExecutor(contentAddressableStorage blobstore.BlobAccess, buildDirectoryCreator BuildDirectoryCreator, runner runner.Runner, clock clock.Clock, defaultExecutionTimeout, maximumExecutionTimeout time.Duration, inputRootCharacterDevices map[path.Component]int, maximumMessageSizeBytes int, workerID map[string]string) BuildExecutor {
 	return &localBuildExecutor{
 		contentAddressableStorage: contentAddressableStorage,
 		buildDirectoryCreator:     buildDirectoryCreator,
@@ -82,6 +83,7 @@ func NewLocalBuildExecutor(contentAddressableStorage blobstore.BlobAccess, build
 		maximumExecutionTimeout:   maximumExecutionTimeout,
 		inputRootCharacterDevices: inputRootCharacterDevices,
 		maximumMessageSizeBytes:   maximumMessageSizeBytes,
+		workerID:                  workerID,
 	}
 }
 
@@ -243,6 +245,7 @@ func (be *localBuildExecutor) Execute(ctx context.Context, filePool re_filesyste
 	ctxWithTimeout, cancelTimeout := be.clock.NewContextWithTimeout(ctxWithIOError, executionTimeout)
 	defer cancelTimeout()
 	environmentVariables := map[string]string{}
+	environmentVariables["ENGFLOW_EXECUTOR_ID"] = be.workerID["thread"]
 	for _, environmentVariable := range command.EnvironmentVariables {
 		environmentVariables[environmentVariable.Name] = environmentVariable.Value
 	}

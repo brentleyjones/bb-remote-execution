@@ -20,7 +20,6 @@ import (
 	runner_pb "github.com/buildbarn/bb-remote-execution/pkg/proto/runner"
 	"github.com/buildbarn/bb-remote-execution/pkg/runner"
 	"github.com/buildbarn/bb-remote-execution/pkg/sync"
-	"github.com/buildbarn/bb-storage/pkg/atomic"
 	"github.com/buildbarn/bb-storage/pkg/blobstore"
 	blobstore_configuration "github.com/buildbarn/bb-storage/pkg/blobstore/configuration"
 	"github.com/buildbarn/bb-storage/pkg/clock"
@@ -167,7 +166,6 @@ func main() {
 		}
 
 		var buildDirectoryInitializer sync.Initializer
-		var sharedBuildDirectoryNextParallelActionID atomic.Uint64
 		if len(buildDirectoryConfiguration.Runners) == 0 {
 			log.Fatal("Cannot start worker without any runners")
 		}
@@ -239,20 +237,6 @@ func main() {
 							contentAddressableStorageWriter)
 					}
 
-					// Create a per-action subdirectory in
-					// the build directory named after the
-					// action digest, so that multiple
-					// actions may be run concurrently.
-					//
-					// Also clean the build directory every
-					// time when going from fully idle to
-					// executing one action.
-					buildDirectoryCreator := builder.NewSharedBuildDirectoryCreator(
-						builder.NewCleanBuildDirectoryCreator(
-							builder.NewRootBuildDirectoryCreator(buildDirectory),
-							&buildDirectoryInitializer),
-						&sharedBuildDirectoryNextParallelActionID)
-
 					workerID := map[string]string{}
 					if runnerConfiguration.Concurrency > 1 {
 						workerID["thread"] = fmt.Sprintf("%0*d", concurrencyLength, threadID)
@@ -264,6 +248,12 @@ func main() {
 					if err != nil {
 						log.Fatal("Failed to marshal worker ID: ", err)
 					}
+
+					buildDirectoryCreator := builder.NewStableSharedBuildDirectoryCreator(
+						builder.NewCleanBuildDirectoryCreator(
+							builder.NewRootBuildDirectoryCreator(buildDirectory),
+							&buildDirectoryInitializer),
+						workerID)
 
 					buildExecutor := builder.NewCachingBuildExecutor(
 						builder.NewMetricsBuildExecutor(

@@ -291,8 +291,21 @@ func (r *localRunner) Run(ctx context.Context, request *runner.RunRequest) (*run
 	if err != nil {
 		return nil, util.StatusWrap(err, "Failed to marshal POSIX resource usage")
 	}
+
+	// Report signal exit codes correctly
+	var exitCode int
+	if status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); ok {
+		if status.Signaled() {
+			exitCode = 128 + int(status.Signal())
+		} else {
+			exitCode = status.ExitStatus()
+		}
+	} else {
+		exitCode = cmd.ProcessState.ExitCode()
+	}
+
 	return &runner.RunResponse{
-		ExitCode:      int32(cmd.ProcessState.ExitCode()),
+		ExitCode:      int32(exitCode),
 		ResourceUsage: []*anypb.Any{posixResourceUsage},
 	}, nil
 }
